@@ -29,7 +29,6 @@ def check_check_sum(packet, check_sum_from_client):
 
 def acknowledge_packet(server_socket, client_address, sequence_number,zeros,packet_type):
     ''' the acknowledge packet contains only the headers : 32 bit sequence number. 16 bits of zeros and 16 bits of ack packet type'''
-    print("sending ack no :",sequence_number)
     tcp_header = struct.pack("!LHH",sequence_number,str_binary_to_i(zeros),str_binary_to_i(packet_type))
     server_socket.sendto(tcp_header,client_address)
 
@@ -37,8 +36,9 @@ def str_binary_to_i(str):
     return int(str, 2)
 
 
-def build_file(data,file_printer):
-    file_printer.write(data)
+def build_file(packet_dict, n, file_printer):
+    for i in range(n):
+        file_printer.write(packet_dict[i])
 
 if __name__ == '__main__':
     CLIENT_PORT = 60000
@@ -47,6 +47,8 @@ if __name__ == '__main__':
     packet_type_ack_16_bits = "1010101010101010"
     zeros = "0000000000000000"
     fin_16_bits = '1111111111111111'
+    packets_received = {}
+    last_packet=0
 
     SERVER_PORT = int(sys.argv[1])
     FILE_LOC = sys.argv[2]
@@ -72,6 +74,7 @@ if __name__ == '__main__':
             if packet_type == str_binary_to_i(fin_16_bits):
                 # sending the last acknowledgement
                 acknowledge_packet(server_socket, (client_host_name, CLIENT_PORT), sequence_number, zeros, packet_type_ack_16_bits)
+                last_packet = sequence_number
                 print("Complete Data downloaded")
                 break
 
@@ -82,11 +85,15 @@ if __name__ == '__main__':
                 server_socket.close()
                 break
 
+
             acknowledge_packet(server_socket, (client_host_name,CLIENT_PORT), sequence_number, zeros, packet_type_ack_16_bits)
-            build_file(data,file_printer)
+            if not int(sequence_number) in packets_received:
+                packets_received[int(sequence_number)] = data
+
 
         else:
             print('Improper Checksum, sequence number = ', str(sequence_number))
-
+            
+    build_file(packets_received, last_packet - 1, file_printer)
     file_printer.close()
     server_socket.close()
