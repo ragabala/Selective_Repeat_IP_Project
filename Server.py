@@ -2,6 +2,9 @@ import socket
 import sys
 import random
 import struct
+import threading
+import time
+import sys
 
 def decapsulate(packet):
     ''' https://docs.python.org/2/library/struct.html '''
@@ -38,7 +41,22 @@ def str_binary_to_i(str):
 
 def build_file(packet_dict, n, file_printer):
     for i in range(n):
-        file_printer.write(packet_dict[i])
+        if i in packet_dict:
+            file_printer.write(packet_dict[i])
+
+
+def time_wait_thread():
+    '''This makes the server to wait for all the incoming requests after getting the fin packet
+        This is as per the TCP protocol'''
+    time.sleep(RTT*2)
+    global flag
+    flag = False
+    build_file(packets_received, last_packet, file_printer)
+    file_printer.close()
+    server_socket.close()
+    sys.exit()
+
+
 
 if __name__ == '__main__':
     CLIENT_PORT = 60000
@@ -49,17 +67,20 @@ if __name__ == '__main__':
     fin_16_bits = '1111111111111111'
     packets_received = {}
     last_packet=0
-
+    RTT = 0.100
+    time_wait = threading.Thread(target= time_wait_thread)
     SERVER_PORT = int(sys.argv[1])
     FILE_LOC = sys.argv[2]
     LOSS_PROBABILITY = float(sys.argv[3])
     in_transfer = True
-    file_printer = open(FILE_LOC,"w")
+    flag = True
+    time_wait_not_started = True
+    file_printer = open(FILE_LOC, "w")
     # this step connects to a socket with UDP
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_socket.bind((HOST_NAME,SERVER_PORT))
     print("Server started and is listening at port : ",SERVER_PORT)
-    while True:
+    while flag:
         data, addr = server_socket.recvfrom(2048)
         client_host_name = addr[0]
         sequence_number, checksum, packet_type, data = decapsulate(data)
@@ -74,9 +95,16 @@ if __name__ == '__main__':
             if packet_type == str_binary_to_i(fin_16_bits):
                 # sending the last acknowledgement
                 acknowledge_packet(server_socket, (client_host_name, CLIENT_PORT), sequence_number, zeros, packet_type_ack_16_bits)
+                #acknowledging again for reliability
+                acknowledge_packet(server_socket, (client_host_name, CLIENT_PORT), sequence_number, zeros, packet_type_ack_16_bits)
                 last_packet = sequence_number
-                print("Complete Data downloaded")
-                break
+                print("Last packet received")
+                if time_wait_not_started:
+                    time_wait_not_started = False
+                    time_wait.start()
+                continue
+
+
 
             if not packet_type == str_binary_to_i(packet_type_data_16_bits):
                 print("received packet type = ", str(packet_type))
@@ -85,15 +113,19 @@ if __name__ == '__main__':
                 server_socket.close()
                 break
 
-
-            acknowledge_packet(server_socket, (client_host_name,CLIENT_PORT), sequence_number, zeros, packet_type_ack_16_bits)
             if not int(sequence_number) in packets_received:
                 packets_received[int(sequence_number)] = data
+
+            acknowledge_packet(server_socket, (client_host_name,CLIENT_PORT), sequence_number, zeros, packet_type_ack_16_bits)
+
 
 
         else:
             print('Improper Checksum, sequence number = ', str(sequence_number))
+
+
+
             
-    build_file(packets_received, last_packet - 1, file_printer)
+    build_file(packets_received, last_packet, file_printer)
     file_printer.close()
     server_socket.close()

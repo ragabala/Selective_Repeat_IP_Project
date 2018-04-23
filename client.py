@@ -65,12 +65,13 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
     global resend_queue
     global retransmissions
 
+
     timestamp = [0.0]*total_packets
     last_packet_send = -1
 
     # This gets values added when packets in transit have not been acknowledged and their time surpasses the RTO
 
-    while acks_received < total_packets:
+    while acks_received < total_packets-1:
         lock.acquire()
         #packet number tracking len is the number of packets that are currently in transit
         packet_number_tracking_len = len(packet_number_tracking)
@@ -100,15 +101,6 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
                     last_packet_send = j
                 j += 1
 
-            # temp = min(window_start + window_size, total_packets)
-            # while j < temp:
-            #     if not track_packets[j]:
-            #         packet_to_be_sent = packet_to_send[j]
-            #         timestamp[j] = time.time()
-            #         send_packet(packet_to_be_sent)
-            #         packet_number_tracking.append(j)
-            #     j += 1
-
         # tracking all the ones that are in transit
         packet_number_tracking_len = len(packet_number_tracking)
         to_be_removed = []  # for removing packets in transit
@@ -118,24 +110,20 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
                 if track_packets[packet_number]:  # means it is acknowledged
                     to_be_removed.append(packet_number)
 
+
                 elif (time.time() - timestamp[packet_number]) > RTO:
-                    print("Time out, Sequence number: " + str(packet_number))
-                    resend_queue.put(packet_number)
-                    retransmissions+=1
-                    to_be_removed.append(packet_number)
+                    if not track_packets[packet_number]:
+                        #print("Time out, Sequence number: " + str(packet_number))
+                        resend_queue.put(packet_number)
+                        retransmissions += 1
+                        to_be_removed.append(packet_number)
 
         # finding the new window size depends on the resend values and the values in transit
 
         if len(to_be_removed) > 0:
-            packet_number_tracking = remove_items_util(packet_number_tracking,to_be_removed)
+            packet_number_tracking = remove_items_util(packet_number_tracking, to_be_removed)
             to_be_removed.clear()
 
-        if len(packet_number_tracking) == 0 and resend_queue.empty():
-            window_start += n
-
-        elif not resend_queue.empty():
-            #get minimum resend pack and all the packets before it should have been acked
-            window_start = resend_queue.queue[0]
         lock.release()
 
 
@@ -150,25 +138,32 @@ def receive_ACK(client_socket):
     global window_start
     global acks_received
 
-    while acks_received < total_packets:
+    while acks_received < total_packets-1:
         packet_number_tracking_len = len(packet_number_tracking)
         if packet_number_tracking_len > 0:
-            data = client_socket.recv(2048)
+            data = client_socket.recv(2048) #2048 IS ENOUGH FOR THE ACCNOWLEDGEMENTS
             lock.acquire()
             ack_number, zeroes_received, packet_type = decapsulate(data)
+            if ack_number in packet_number_tracking:
+                packet_number_tracking.remove(ack_number)
 
             if not zeroes_received == str_binary_to_i(zeros) or not packet_type == str_binary_to_i(packet_type_ack_16_bits):
                 print("Invalid Acknowledgement, Sequence number = ", window_start)
-                packet_number_tracking.remove(ack_number)
                 resend_queue.put(ack_number)
                 track_packets[ack_number] = False
             else:
-                if not track_packets[ack_number]:
-                    acks_received+=1
-                    track_packets[ack_number] = True # meaning acknowledgement is received for this packet
-
-                if ack_number in packet_number_tracking:
-                    packet_number_tracking.remove(ack_number)
+                if not track_packets[ack_number]:  # this is for non duplicate real acknowledgement
+                    acks_received += 1
+                    track_packets[ack_number] = True  # meaning acknowledgement is received for this packet
+                    print("ack, ",acks_received)
+                    # we can now evaluate the window start by looping from the current
+                    #  window start up to window size values with track packets being true
+                    i = window_start
+                    end = min(i+n, total_packets)  # to avoid over running the total packets
+                    while i < end and track_packets[i]:
+                        i += 1
+                        continue
+                    window_start = i
             lock.release()
 
 def send_packet(packet):
@@ -208,7 +203,7 @@ if __name__ == "__main__":
     retransmissions = 0
     acks_received = 0
 
-    RTO = 0.05 # value in seconds
+    RTO = 0.1 # value in seconds
     if len(sys.argv) == 6 and sys.argv[1] and sys.argv[2] and sys.argv[1] and sys.argv[3] and sys.argv[4] and sys.argv[5]:
         server_name = sys.argv[1]
         server_port = int(sys.argv[2])
@@ -218,6 +213,7 @@ if __name__ == "__main__":
         resend_queue = Queue(maxsize=n)
     else:
         raise ValueError("Please enter valid arguments in the order: server host name, server port, download file name, window size and MSS")
+
     print("Server name: " + str(server_name) + " and port " + str(server_port))
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client_socket.bind(('0.0.0.0', client_port))
