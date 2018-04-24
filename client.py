@@ -3,10 +3,12 @@ import sys
 import threading
 import time
 import struct
+import random
 from queue import *
 
 def carry_around_add(a, b):
     ''' This is used for using the carry of the checksum in the actual 16 digits of check sum'''
+
     c = a + b
     return (c & 0xffff) + (c >> 16)
 
@@ -64,14 +66,16 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
     global timestamp
     global resend_queue
     global retransmissions
-
+    global check_flag
 
     timestamp = [0.0]*total_packets
     last_packet_send = -1
 
     # This gets values added when packets in transit have not been acknowledged and their time surpasses the RTO
 
-    while acks_received < total_packets-1:
+    while acks_received < total_packets:
+        if not check_flag:
+            break
         lock.acquire()
         #packet number tracking len is the number of packets that are currently in transit
         packet_number_tracking_len = len(packet_number_tracking)
@@ -110,10 +114,10 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
                 if track_packets[packet_number]:  # means it is acknowledged
                     to_be_removed.append(packet_number)
 
-
                 elif (time.time() - timestamp[packet_number]) > RTO:
                     if not track_packets[packet_number]:
-                        #print("Time out, Sequence number: " + str(packet_number))
+                        if random.random > 0.6:
+                            print("Time out, Sequence number: " + str(packet_number))
                         resend_queue.put(packet_number)
                         retransmissions += 1
                         to_be_removed.append(packet_number)
@@ -137,8 +141,14 @@ def receive_ACK(client_socket):
     global packet_number_tracking
     global window_start
     global acks_received
+    global check_flag
 
-    while acks_received < total_packets-1:
+    while acks_received < total_packets:
+
+        if not check_flag:
+            break
+
+
         packet_number_tracking_len = len(packet_number_tracking)
         if packet_number_tracking_len > 0:
             data = client_socket.recv(2048) #2048 IS ENOUGH FOR THE ACCNOWLEDGEMENTS
@@ -152,10 +162,18 @@ def receive_ACK(client_socket):
                 resend_queue.put(ack_number)
                 track_packets[ack_number] = False
             else:
+
+                if zeroes_received == str_binary_to_i(fin_packet_type):
+                    print("last ack")
+                    check_flag = False
+                    lock.release()
+                    continue
+
+
                 if not track_packets[ack_number]:  # this is for non duplicate real acknowledgement
                     acks_received += 1
                     track_packets[ack_number] = True  # meaning acknowledgement is received for this packet
-                    print("ack, ",acks_received)
+                    #print("ack, ",acks_received)
                     # we can now evaluate the window start by looping from the current
                     #  window start up to window size values with track packets being true
                     i = window_start
@@ -202,6 +220,7 @@ if __name__ == "__main__":
     zeros = "0000000000000000"
     retransmissions = 0
     acks_received = 0
+    check_flag = True
 
     RTO = 0.1 # value in seconds
     if len(sys.argv) == 6 and sys.argv[1] and sys.argv[2] and sys.argv[1] and sys.argv[3] and sys.argv[4] and sys.argv[5]:
@@ -220,6 +239,11 @@ if __name__ == "__main__":
     print("client running on IP " + str(client_ip) + " and port " + str(client_port))
     extract_from_file(file, mss)
     print("Total Packets present : "+str(total_packets))
+
+    # sending the number of packets in the server for tracking purpose
+    client_socket.sendto(str(total_packets).encode(),(server_name,server_port))
+
+
     t = threading.Thread(target= receive_ACK, args= (client_socket,))
     t.start()
     start_time = time.time()
