@@ -8,7 +8,6 @@ from queue import *
 
 def carry_around_add(a, b):
     ''' This is used for using the carry of the checksum in the actual 16 digits of check sum'''
-
     c = a + b
     return (c & 0xffff) + (c >> 16)
 
@@ -83,7 +82,7 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
         if (packet_number_tracking_len < window_size) and ((window_start + packet_number_tracking_len) < total_packets):
             #we will loop here and send all the packets in the window and wait for the acknowledgements
 
-            # first resend all that are present in the resend queue starting from lowest to highest
+            # first resend all that are present in the resend queue
             #initially the list will be empty there by not resending anything
             while not resend_queue.empty():
                 i = resend_queue.get()
@@ -116,7 +115,7 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
 
                 elif (time.time() - timestamp[packet_number]) > RTO:
                     if not track_packets[packet_number]:
-                        if random.random > 0.6:
+                        if random.random() > 0.6: # to print some time outs and not everything so console wont be bombarder
                             print("Time out, Sequence number: " + str(packet_number))
                         resend_queue.put(packet_number)
                         retransmissions += 1
@@ -132,12 +131,13 @@ def rdt_send(client_socket, window_size, server_name, sever_port):
 
 
 def  remove_items_util(a,b):
+    '''Utility function that is used for clearing items between two lists'''
     return list(set(a)-set(b))
 
 
 def receive_ACK(client_socket):
     '''This takes care of receiving the acknowledgements from the server for the sent paclets.
-    This runs in parallel thread to the main thread, that runs the sending packets'''
+    This runs in parallel thread to the main thread, that runs the sending packets '''
     global packet_number_tracking
     global window_start
     global acks_received
@@ -148,27 +148,26 @@ def receive_ACK(client_socket):
         if not check_flag:
             break
 
-
         packet_number_tracking_len = len(packet_number_tracking)
         if packet_number_tracking_len > 0:
-            data = client_socket.recv(2048) #2048 IS ENOUGH FOR THE ACCNOWLEDGEMENTS
+            data = client_socket.recv(2048)  # 2048 IS ENOUGH FOR THE ACKNOWLEDGEMENTS
             lock.acquire()
             ack_number, zeroes_received, packet_type = decapsulate(data)
             if ack_number in packet_number_tracking:
                 packet_number_tracking.remove(ack_number)
+
+            if zeroes_received == str_binary_to_i(fin_packet_type):
+                ''' This is used for checking whether all the packets have reached the server and stored'''
+                print("last ack")
+                check_flag = False
+                lock.release()
+                continue
 
             if not zeroes_received == str_binary_to_i(zeros) or not packet_type == str_binary_to_i(packet_type_ack_16_bits):
                 print("Invalid Acknowledgement, Sequence number = ", window_start)
                 resend_queue.put(ack_number)
                 track_packets[ack_number] = False
             else:
-
-                if zeroes_received == str_binary_to_i(fin_packet_type):
-                    print("last ack")
-                    check_flag = False
-                    lock.release()
-                    continue
-
 
                 if not track_packets[ack_number]:  # this is for non duplicate real acknowledgement
                     acks_received += 1
@@ -185,13 +184,16 @@ def receive_ACK(client_socket):
             lock.release()
 
 def send_packet(packet):
+    ''' useful in sending the packet to the server address'''
     global client_socket
     client_socket.sendto(packet, (server_name, server_port))
 
 def decapsulate(packet):
-    """ https://docs.python.org/2/library/struct.html """
+    """ https://docs.python.org/2/library/struct.html
+     This is used for decapsulating the packet into the correspondind headers from server (acknowledgement)'''
+    """
     tcp_headers = struct.unpack('!LHH', packet[0:8]) # the tcp header information that we are passing are nine bytes - seq num, checksum and EOF message
-    sequence_number = tcp_headers[0]
+    sequence_number = tcp_headers[0]  # is the ack number
     zeroes = tcp_headers[1]
     packet_type = tcp_headers[2]
     return sequence_number, zeroes, packet_type
@@ -199,30 +201,31 @@ def decapsulate(packet):
 def str_binary_to_i(str):
     return int(str, 2)
 
-
-
 if __name__ == "__main__":
     '''The main function where all the configurations happens'''
     client_host = socket.gethostname()
     client_ip = socket.gethostbyname(client_host)
     print("received host",client_ip)
     client_port = 60000
-    packet_to_send = []
-    track_packets = []
-    packet_number_tracking = []
-    timestamp = []
+    # buffers
+    packet_to_send = []  # saves all the packets that are segmented in the client. It contains the file
+    track_packets = []  # save the state of each packet. Once a packet is acknowledged, it carries true else false
+    packet_number_tracking = []  # saves all the packets that are in transit. Used for checking which packets to resend on timeout
+    timestamp = []  # is used for computing the timestamp of the packets that are sent. Used in retransmission computation
     window_start = 0
     lock = threading.Lock()
     total_packets = 0
-    packet_type_data_16_bits = "0101010101010101"
-    fin_packet_type = "1111111111111111"
-    packet_type_ack_16_bits = "1010101010101010"
-    zeros = "0000000000000000"
+
+    packet_type_data_16_bits = "0101010101010101"  # used for checking type of data packet
+    fin_packet_type = "1111111111111111"  # used for checking type of fin packet
+    packet_type_ack_16_bits = "1010101010101010 "  # used for checking type of ack packet
+    zeros = "0000000000000000"   # used for checking type of zeros packet
+
     retransmissions = 0
     acks_received = 0
     check_flag = True
 
-    RTO = 0.1 # value in seconds
+    RTO = 0.1  # value in seconds - is the retransmission time out value
     if len(sys.argv) == 6 and sys.argv[1] and sys.argv[2] and sys.argv[1] and sys.argv[3] and sys.argv[4] and sys.argv[5]:
         server_name = sys.argv[1]
         server_port = int(sys.argv[2])
@@ -242,7 +245,6 @@ if __name__ == "__main__":
 
     # sending the number of packets in the server for tracking purpose
     client_socket.sendto(str(total_packets).encode(),(server_name,server_port))
-
 
     t = threading.Thread(target= receive_ACK, args= (client_socket,))
     t.start()
